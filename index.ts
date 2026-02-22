@@ -312,6 +312,14 @@ function summarizeCommandFailure(command: string, stderr: string, stdout: string
   return `${command} failed: ${detail}`;
 }
 
+function tryParseJson(text: string): unknown | undefined {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+}
+
 async function runEmacsEval(runCfg: EmacsRunConfig, elispExpression: string): Promise<unknown> {
   const args: string[] = [];
 
@@ -397,14 +405,25 @@ async function runEmacsEval(runCfg: EmacsRunConfig, elispExpression: string): Pr
     return { ok: true };
   }
 
-  try {
-    return JSON.parse(trimmed);
-  } catch {
-    return {
-      ok: true,
-      raw: trimmed,
-    };
+  const parsed = tryParseJson(trimmed);
+  if (parsed !== undefined) {
+    // emacsclient prints string return values as escaped strings; parse nested JSON once more.
+    if (typeof parsed === "string") {
+      const nestedSource = parsed.trim();
+      if (nestedSource.startsWith("{") || nestedSource.startsWith("[")) {
+        const nested = tryParseJson(nestedSource);
+        if (nested !== undefined) {
+          return nested;
+        }
+      }
+    }
+    return parsed;
   }
+
+  return {
+    ok: true,
+    raw: trimmed,
+  };
 }
 
 function assertOpenPathAllowed(
@@ -461,6 +480,11 @@ const ELISP_HELPERS = `
       (if (and openclaw-last-user-window (window-live-p openclaw-last-user-window))
           openclaw-last-user-window
         (selected-window))))
+  (unless (fboundp 'openclaw--emit-json-result)
+    (defun openclaw--emit-json-result (tool summary payload)
+      (require 'json)
+      (message "OpenClaw %s: %s" tool summary)
+      (json-encode payload)))
 `.trim();
 
 function createListTool(runCfg: EmacsRunConfig): AnyAgentTool {
@@ -534,16 +558,17 @@ function createListTool(runCfg: EmacsRunConfig): AnyAgentTool {
                          (window-list f 'no-minibuffer)))
                       (frame-list)))
             [])))
-    (require 'json)
-    (princ
-     (json-encode
-      \`((ok . t)
-        (count . ,(length buffers))
-        (buffers . ,buffers)
-        (frames . ,frames)
-        (windows . ,windows)
-        (userActiveWindowId . ,(when (window-live-p openclaw-last-user-window)
-                                 (openclaw--window-id openclaw-last-user-window))))))))
+    (openclaw--emit-json-result
+     "emacs_list"
+     (format "buffers=%d frames=%d windows=%d"
+             (length buffers) (length frames) (length windows))
+     \`((ok . t)
+       (count . ,(length buffers))
+       (buffers . ,buffers)
+       (frames . ,frames)
+       (windows . ,windows)
+       (userActiveWindowId . ,(when (window-live-p openclaw-last-user-window)
+                                (openclaw--window-id openclaw-last-user-window)))))))
 `.trim();
 
       const payload = await runEmacsEval(runCfg, expr);
@@ -629,29 +654,33 @@ function createReadTool(runCfg: EmacsRunConfig, cfg: EmacsToolsPluginConfig): An
            (raw-len (length raw))
            (truncated (> raw-len limit))
            (visible (if truncated (substring raw 0 limit) raw)))
-      (require 'json)
-      (princ
-       (json-encode
-        \`((ok . t)
-          (requestedView . ,view-mode)
-          (effectiveView . ,effective-view)
-          (buffer . ,(buffer-name buf))
-          (file . ,(with-current-buffer buf (buffer-file-name buf)))
-          (windowId . ,(when win (openclaw--window-id win)))
-          (frameId . ,(when win (openclaw--frame-id (window-frame win))))
-          (tty . ,(when win (openclaw--window-tty win)))
-          (point . ,point)
-          (line . ,line)
-          (column . ,column)
-          (regionActive . ,(if region-active t :json-false))
-          (regionStart . ,region-start)
-          (regionEnd . ,region-end)
-          (start . ,start)
-          (end . ,end)
-          (visibleText . ,visible)
-          (visibleTextLength . ,(length visible))
-          (totalSliceLength . ,raw-len)
-          (truncated . ,(if truncated t :json-false))))))))
+      (openclaw--emit-json-result
+       "emacs_read"
+       (format "buffer=%s view=%s chars=%d%s"
+               (buffer-name buf)
+               effective-view
+               (length visible)
+               (if truncated "+" ""))
+       \`((ok . t)
+         (requestedView . ,view-mode)
+         (effectiveView . ,effective-view)
+         (buffer . ,(buffer-name buf))
+         (file . ,(with-current-buffer buf (buffer-file-name buf)))
+         (windowId . ,(when win (openclaw--window-id win)))
+         (frameId . ,(when win (openclaw--frame-id (window-frame win))))
+         (tty . ,(when win (openclaw--window-tty win)))
+         (point . ,point)
+         (line . ,line)
+         (column . ,column)
+         (regionActive . ,(if region-active t :json-false))
+         (regionStart . ,region-start)
+         (regionEnd . ,region-end)
+         (start . ,start)
+         (end . ,end)
+         (visibleText . ,visible)
+         (visibleTextLength . ,(length visible))
+         (totalSliceLength . ,raw-len)
+         (truncated . ,(if truncated t :json-false)))))))
 `.trim();
 
       const payload = await runEmacsEval(runCfg, expr);
@@ -704,19 +733,20 @@ function createOpenTool(
              (point (window-point win))
              (line (save-excursion (goto-char point) (line-number-at-pos point)))
              (column (save-excursion (goto-char point) (current-column))))
-        (require 'json)
-        (princ
-         (json-encode
-          \`((ok . t)
-            (buffer . ,(buffer-name buf))
-            (file . ,(buffer-file-name buf))
-            (windowId . ,(openclaw--window-id win))
-            (frameId . ,(openclaw--frame-id frame))
-            (tty . ,(openclaw--window-tty win))
-            (point . ,point)
-            (line . ,line)
-            (column . ,column)
-            (focused . ,(if focus-window t :json-false)))))))))
+        (openclaw--emit-json-result
+         "emacs_open"
+         (format "buffer=%s line=%d column=%d"
+                 (buffer-name buf) line column)
+         \`((ok . t)
+           (buffer . ,(buffer-name buf))
+           (file . ,(buffer-file-name buf))
+           (windowId . ,(openclaw--window-id win))
+           (frameId . ,(openclaw--frame-id frame))
+           (tty . ,(openclaw--window-tty win))
+           (point . ,point)
+           (line . ,line)
+           (column . ,column)
+           (focused . ,(if focus-window t :json-false)))))))))
 `.trim();
 
       const payload = await runEmacsEval(runCfg, expr);
@@ -787,21 +817,22 @@ function createInsertTool(runCfg: EmacsRunConfig): AnyAgentTool {
                (line (save-excursion (goto-char point) (line-number-at-pos point)))
                (column (save-excursion (goto-char point) (current-column))))
           (set-window-point win point)
-          (require 'json)
-          (princ
-           (json-encode
-            \`((ok . t)
-              (buffer . ,(buffer-name buf))
-              (file . ,(buffer-file-name buf))
-              (windowId . ,(openclaw--window-id win))
-              (frameId . ,(openclaw--frame-id frame))
-              (tty . ,(openclaw--window-tty win))
-              (point . ,point)
-              (line . ,line)
-              (column . ,column)
-              (insertedChars . ,(length txt))
-              (at . ,at-mode)
-              (undoBoundary . ,(if with-undo-boundary t :json-false))))))))))
+          (openclaw--emit-json-result
+           "emacs_insert"
+           (format "buffer=%s inserted=%d at=%s"
+                   (buffer-name buf) (length txt) at-mode)
+           \`((ok . t)
+             (buffer . ,(buffer-name buf))
+             (file . ,(buffer-file-name buf))
+             (windowId . ,(openclaw--window-id win))
+             (frameId . ,(openclaw--frame-id frame))
+             (tty . ,(openclaw--window-tty win))
+             (point . ,point)
+             (line . ,line)
+             (column . ,column)
+             (insertedChars . ,(length txt))
+             (at . ,at-mode)
+             (undoBoundary . ,(if with-undo-boundary t :json-false))))))))))
 `.trim();
 
       const payload = await runEmacsEval(runCfg, expr);
@@ -824,7 +855,9 @@ function createEditTool(runCfg: EmacsRunConfig): AnyAgentTool {
       const newString = readStringParam(params, "new_string", { required: true });
 
       const expr = `
-(let* ((buffer-name-str ${toElispBase64DecodeExpr(bufferName)})
+(progn
+  ${ELISP_HELPERS}
+  (let* ((buffer-name-str ${toElispBase64DecodeExpr(bufferName)})
        (old-text ${toElispBase64DecodeExpr(oldString)})
        (new-text ${toElispBase64DecodeExpr(newString)})
        (buf (get-buffer buffer-name-str)))
@@ -849,17 +882,20 @@ function createEditTool(runCfg: EmacsRunConfig): AnyAgentTool {
           (let* ((point (point))
                  (line (line-number-at-pos point))
                  (column (current-column)))
-            (require 'json)
-            (princ
-             (json-encode
-              \`((ok . t)
-                (buffer . ,(buffer-name buf))
-                (file . ,(buffer-file-name buf))
-                (point . ,point)
-                (line . ,line)
-                (column . ,column)
-                (replacedChars . ,(- match-end match-start))
-                (insertedChars . ,(length new-text)))))))))))
+            (openclaw--emit-json-result
+             "emacs_edit"
+             (format "buffer=%s replaced=%d inserted=%d"
+                     (buffer-name buf)
+                     (- match-end match-start)
+                     (length new-text))
+             \`((ok . t)
+               (buffer . ,(buffer-name buf))
+               (file . ,(buffer-file-name buf))
+               (point . ,point)
+               (line . ,line)
+               (column . ,column)
+               (replacedChars . ,(- match-end match-start))
+               (insertedChars . ,(length new-text))))))))))))
 `.trim();
 
       const payload = await runEmacsEval(runCfg, expr);
@@ -873,13 +909,64 @@ function createEvalTool(runCfg: EmacsRunConfig): AnyAgentTool {
     name: "emacs_eval",
     label: "Emacs Eval",
     description:
-      "Evaluate an arbitrary Emacs Lisp expression. Returns the printed output (via princ) or the expression's value. Use for anything the other emacs tools don't cover.",
+      "Evaluate arbitrary Emacs Lisp and return structured channels: value, stdout, messages, and stderr.",
     parameters: EVAL_SCHEMA,
     execute: async (_toolCallId: string, args: unknown) => {
       const params = asRecord(args);
       const expression = readStringParam(params, "expression", { required: true });
 
-      const payload = await runEmacsEval(runCfg, expression);
+      const expr = `
+(progn
+  ${ELISP_HELPERS}
+  (require 'cl-lib)
+  (let ((openclaw-out (generate-new-buffer " *openclaw-eval-out*"))
+        (openclaw-msg (generate-new-buffer " *openclaw-eval-msg*"))
+        (openclaw-err (generate-new-buffer " *openclaw-eval-err*"))
+        (openclaw-ok t)
+        (openclaw-error nil)
+        (openclaw-value nil))
+    (unwind-protect
+        (progn
+          (cl-letf (((symbol-function 'message)
+                     (lambda (fmt &rest args)
+                       (let ((txt (apply #'format fmt args)))
+                         (with-current-buffer openclaw-msg
+                           (insert txt "\\n"))
+                         txt))))
+            (let ((standard-output openclaw-out)
+                  (standard-error openclaw-err))
+              (message "OpenClaw emacs_eval: evaluating expression")
+              (condition-case err
+                  (setq openclaw-value
+                        ${expression})
+                (error
+                 (setq openclaw-ok nil)
+                 (setq openclaw-error (error-message-string err))))))
+          (openclaw--emit-json-result
+           "emacs_eval"
+           (if openclaw-ok
+               "ok"
+             (format "error=%s" openclaw-error))
+           \`((ok . ,(if openclaw-ok t :json-false))
+             (value . ,(prin1-to-string openclaw-value))
+             (valueType . ,(symbol-name (type-of openclaw-value)))
+             (stdout . ,(with-current-buffer openclaw-out
+                          (buffer-substring-no-properties (point-min) (point-max))))
+             (messages . ,(with-current-buffer openclaw-msg
+                            (buffer-substring-no-properties (point-min) (point-max))))
+             (stderr . ,(concat
+                         (with-current-buffer openclaw-err
+                           (buffer-substring-no-properties (point-min) (point-max)))
+                         (if openclaw-error
+                             (concat (if (> (buffer-size openclaw-err) 0) "\\n" "") openclaw-error)
+                           "")))
+             (hadError . ,(if openclaw-ok :json-false t)))))
+      (kill-buffer openclaw-out)
+      (kill-buffer openclaw-msg)
+      (kill-buffer openclaw-err))))
+`.trim();
+
+      const payload = await runEmacsEval(runCfg, expr);
       return jsonResult(payload);
     },
   };

@@ -56,7 +56,12 @@ Opens a file in the active window. `path` must be within the workspace or `allow
 emacs_eval(expression)
 ```
 
-Evaluate any Emacs Lisp expression. Use `princ` to return string output. This is the escape hatch for anything the other tools don't cover.
+Evaluate any Emacs Lisp expression and return structured capture:
+- `value` — Printed representation of the returned Lisp value.
+- `valueType` — Lisp type of the returned value.
+- `stdout` — Output written via `princ`/`print`/`standard-output`.
+- `messages` — Text emitted via `message`.
+- `stderr` — Captured error channel text and error message (if evaluation failed).
 
 ### `emacs_list`
 
