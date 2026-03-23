@@ -5,8 +5,13 @@ import type {
   AnyAgentTool,
   OpenClawPluginApi,
   OpenClawPluginToolContext,
-} from "openclaw/plugin-sdk";
-import { jsonResult, readNumberParam, readStringParam } from "openclaw/plugin-sdk";
+} from "openclaw/plugin-sdk/core";
+import { readNumberParam, readStringParam } from "openclaw/plugin-sdk/param-readers";
+
+// jsonResult is not exported from any plugin-sdk subpath as of v2026.3.22.
+function jsonResult(payload: unknown): { content: { type: "text"; text: string }[]; details: unknown } {
+  return { content: [{ type: "text", text: JSON.stringify(payload, null, 2) }], details: payload };
+}
 
 type EmacsToolsPluginConfig = {
   emacsclientPath: string;

@@ -9,6 +9,9 @@
       "./index.ts"
     ]
   },
+  "dependencies": {
+    "openclaw": "file:../openclaw"
+  },
   "scripts": {
     "check": "echo 'No local build step configured.'"
   }
