@@ -6,13 +6,19 @@
   "type": "module",
   "openclaw": {
     "extensions": [
-      "./index.ts"
+      "./dist/index.js"
     ]
   },
   "dependencies": {
     "openclaw": "file:../openclaw"
   },
   "scripts": {
-    "check": "echo 'No local build step configured.'"
+    "build": "tsc -p tsconfig.json",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "plugin:validate": "npm run build && openclaw plugins validate --entry ./dist/index.js"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.3"
   }
 }

@@ -2,6 +2,16 @@
   "id": "emacs-tools",
   "name": "Emacs Tools",
   "description": "Agent tools that control a running Emacs daemon via emacsclient.",
+  "contracts": {
+    "tools": [
+      "emacs_list",
+      "emacs_read",
+      "emacs_open",
+      "emacs_insert",
+      "emacs_edit",
+      "emacs_eval"
+    ]
+  },
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
