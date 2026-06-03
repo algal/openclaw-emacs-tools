@@ -1,12 +1,14 @@
 import { spawn } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
+import { Type } from "typebox";
 import type {
   AnyAgentTool,
   OpenClawPluginApi,
   OpenClawPluginToolContext,
 } from "openclaw/plugin-sdk/core";
 import { readNumberParam, readStringParam } from "openclaw/plugin-sdk/param-readers";
+import { defineToolPlugin } from "openclaw/plugin-sdk/tool-plugin";
 
 // jsonResult is not exported from any plugin-sdk subpath as of v2026.3.22.
 function jsonResult(payload: unknown): { content: { type: "text"; text: string }[]; details: unknown } {
@@ -51,81 +53,146 @@ const MAX_STDIO_BYTES = 2 * 1024 * 1024;
 const MAX_CURRENT_CHARS_HARD_LIMIT = 200_000;
 const MIN_CURRENT_CHARS_HARD_LIMIT = 256;
 
-const LIST_SCHEMA = {
-  type: "object",
-  additionalProperties: false,
-  properties: {
-    includeFrames: { type: "boolean" },
-    includeWindows: { type: "boolean" },
+const CONFIG_SCHEMA = Type.Object(
+  {
+    emacsclientPath: Type.Optional(
+      Type.String({
+        description: "Path or command name for emacsclient (default: emacsclient).",
+      }),
+    ),
+    socketName: Type.Optional(
+      Type.String({
+        description: "Optional emacsclient --socket-name value.",
+      }),
+    ),
+    serverFile: Type.Optional(
+      Type.String({
+        description: "Optional emacsclient --server-file value.",
+      }),
+    ),
+    timeoutSeconds: Type.Optional(
+      Type.Number({
+        minimum: 1,
+        description: "Command timeout for each emacsclient call (default: 5).",
+      }),
+    ),
+    maxReadChars: Type.Optional(
+      Type.Number({
+        minimum: MIN_CURRENT_CHARS_HARD_LIMIT,
+        description: "Max chars returned by emacs_read text payload (default: 24000).",
+      }),
+    ),
+    allowOpenOutsideWorkspace: Type.Optional(
+      Type.Boolean({
+        description: "Allow emacs_open paths outside workspaceDir (default: false).",
+      }),
+    ),
+    allowedRoots: Type.Optional(
+      Type.Array(Type.String(), {
+        description: "Extra absolute roots allowed for emacs_open when outside workspace.",
+      }),
+    ),
+    disableInSandbox: Type.Optional(
+      Type.Boolean({
+        description: "Disable tools in sandboxed sessions (default: true).",
+      }),
+    ),
   },
-} as const;
+  { additionalProperties: false },
+);
 
-const READ_SCHEMA = {
-  type: "object",
-  additionalProperties: false,
-  properties: {
-    buffer: { type: "string", description: "Buffer name to read. If omitted, reads the user's currently active window." },
-    view: {
-      type: "string",
-      enum: ["visible", "around_point", "region"],
-      description: "What slice of text to return. 'visible' = what's on screen (default), 'around_point' = text around cursor, 'region' = active selection.",
-    },
-    maxChars: {
-      type: "number",
-      minimum: MIN_CURRENT_CHARS_HARD_LIMIT,
-      maximum: MAX_CURRENT_CHARS_HARD_LIMIT,
-    },
+const LIST_SCHEMA = Type.Object(
+  {
+    includeFrames: Type.Optional(Type.Boolean()),
+    includeWindows: Type.Optional(Type.Boolean()),
   },
-} as const;
+  { additionalProperties: false },
+);
 
-const OPEN_SCHEMA = {
-  type: "object",
-  additionalProperties: false,
-  properties: {
-    path: { type: "string" },
-    line: { type: "number", minimum: 1 },
-    column: { type: "number", minimum: 0 },
-    focus: { type: "boolean" },
+const READ_SCHEMA = Type.Object(
+  {
+    buffer: Type.Optional(
+      Type.String({
+        description: "Buffer name to read. If omitted, reads the user's currently active window.",
+      }),
+    ),
+    view: Type.Optional(
+      Type.Union(
+        [
+          Type.Literal("visible"),
+          Type.Literal("around_point"),
+          Type.Literal("region"),
+        ],
+        {
+          description:
+            "What slice of text to return. 'visible' = what's on screen (default), 'around_point' = text around cursor, 'region' = active selection.",
+        },
+      ),
+    ),
+    maxChars: Type.Optional(
+      Type.Number({
+        minimum: MIN_CURRENT_CHARS_HARD_LIMIT,
+        maximum: MAX_CURRENT_CHARS_HARD_LIMIT,
+      }),
+    ),
   },
-  required: ["path"],
-} as const;
+  { additionalProperties: false },
+);
 
-const INSERT_SCHEMA = {
-  type: "object",
-  additionalProperties: false,
-  properties: {
-    text: { type: "string" },
-    buffer: { type: "string", description: "Buffer name to insert into. If omitted, inserts into the user's currently active buffer." },
-    at: {
-      type: "string",
-      enum: ["point", "bob", "eob", "line_column"],
-    },
-    line: { type: "number", minimum: 1 },
-    column: { type: "number", minimum: 0 },
-    undoBoundary: { type: "boolean" },
+const OPEN_SCHEMA = Type.Object(
+  {
+    path: Type.String(),
+    line: Type.Optional(Type.Number({ minimum: 1 })),
+    column: Type.Optional(Type.Number({ minimum: 0 })),
+    focus: Type.Optional(Type.Boolean()),
   },
-  required: ["text"],
-} as const;
+  { additionalProperties: false },
+);
 
-const EVAL_SCHEMA = {
-  type: "object",
-  additionalProperties: false,
-  properties: {
-    expression: { type: "string", description: "Emacs Lisp expression to evaluate." },
+const INSERT_SCHEMA = Type.Object(
+  {
+    text: Type.String(),
+    buffer: Type.Optional(
+      Type.String({
+        description: "Buffer name to insert into. If omitted, inserts into the user's currently active buffer.",
+      }),
+    ),
+    at: Type.Optional(
+      Type.Union([
+        Type.Literal("point"),
+        Type.Literal("bob"),
+        Type.Literal("eob"),
+        Type.Literal("line_column"),
+      ]),
+    ),
+    line: Type.Optional(Type.Number({ minimum: 1 })),
+    column: Type.Optional(Type.Number({ minimum: 0 })),
+    undoBoundary: Type.Optional(Type.Boolean()),
   },
-  required: ["expression"],
-} as const;
+  { additionalProperties: false },
+);
 
-const EDIT_SCHEMA = {
-  type: "object",
-  additionalProperties: false,
-  properties: {
-    buffer: { type: "string", description: "Buffer name to edit. Required." },
-    old_string: { type: "string", description: "Exact text to find and replace (must match exactly, including whitespace)." },
-    new_string: { type: "string", description: "New text to replace the old text with." },
+const EVAL_SCHEMA = Type.Object(
+  {
+    expression: Type.String({
+      description: "Emacs Lisp expression to evaluate.",
+    }),
   },
-  required: ["buffer", "old_string", "new_string"],
-} as const;
+  { additionalProperties: false },
+);
+
+const EDIT_SCHEMA = Type.Object(
+  {
+    buffer: Type.String({ description: "Buffer name to edit. Required." }),
+    old_string: Type.String({
+      description: "Exact text to find and replace (must match exactly, including whitespace).",
+    }),
+    new_string: Type.String({
+      description: "New text to replace the old text with.",
+    }),
+  },
+  { additionalProperties: false },
+);
 
 function asRecord(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -977,7 +1044,15 @@ function createEvalTool(runCfg: EmacsRunConfig): AnyAgentTool {
   };
 }
 
-function createEmacsTools(api: OpenClawPluginApi, ctx: OpenClawPluginToolContext): AnyAgentTool[] | null {
+function createEmacsToolForContext(
+  api: OpenClawPluginApi,
+  ctx: OpenClawPluginToolContext,
+  create: (
+    runCfg: EmacsRunConfig,
+    cfg: EmacsToolsPluginConfig,
+    ctx: OpenClawPluginToolContext,
+  ) => AnyAgentTool,
+): AnyAgentTool | null {
   const cfg = resolvePluginConfig(api, ctx);
 
   if (ctx.sandboxed && cfg.disableInSandbox) {
@@ -987,36 +1062,80 @@ function createEmacsTools(api: OpenClawPluginApi, ctx: OpenClawPluginToolContext
     return null;
   }
 
-  const runCfg = resolveRunConfig(cfg);
-  const core = [
-    createListTool(runCfg),
-    createReadTool(runCfg, cfg),
-    createOpenTool(runCfg, cfg, ctx),
-    createInsertTool(runCfg),
-    createEditTool(runCfg),
-    createEvalTool(runCfg),
-  ];
-
-  return core;
+  return create(resolveRunConfig(cfg), cfg, ctx);
 }
 
-const plugin = {
+export default defineToolPlugin({
   id: "emacs-tools",
   name: "Emacs Tools",
   description: "Agent tools to control a running Emacs daemon via emacsclient.",
-  register(api: OpenClawPluginApi) {
-    api.registerTool((ctx) => createEmacsTools(api, ctx), {
+  configSchema: CONFIG_SCHEMA,
+  tools: (tool) => [
+    tool({
+      name: "emacs_list",
+      label: "Emacs List",
+      description:
+        "List buffers and optionally frames/windows, including stable ids for deterministic targeting.",
+      parameters: LIST_SCHEMA,
       optional: true,
-      names: [
-        "emacs_list",
-        "emacs_read",
-        "emacs_open",
-        "emacs_insert",
-        "emacs_edit",
-        "emacs_eval",
-      ],
-    });
-  },
-};
-
-export default plugin;
+      factory: ({ api, toolContext }) =>
+        createEmacsToolForContext(api, toolContext, (runCfg) => createListTool(runCfg)),
+    }),
+    tool({
+      name: "emacs_read",
+      label: "Emacs Read",
+      description:
+        "Read text from an Emacs buffer. If buffer is omitted, reads the user's currently active window. Returns buffer contents with point/line/column metadata.",
+      parameters: READ_SCHEMA,
+      optional: true,
+      factory: ({ api, toolContext }) =>
+        createEmacsToolForContext(api, toolContext, (runCfg, cfg) =>
+          createReadTool(runCfg, cfg),
+        ),
+    }),
+    tool({
+      name: "emacs_open",
+      label: "Emacs Open",
+      description:
+        "Open a file and display it in a deterministic target window, with optional line/column positioning.",
+      parameters: OPEN_SCHEMA,
+      optional: true,
+      factory: ({ api, toolContext }) =>
+        createEmacsToolForContext(api, toolContext, (runCfg, cfg, ctx) =>
+          createOpenTool(runCfg, cfg, ctx),
+        ),
+    }),
+    tool({
+      name: "emacs_insert",
+      label: "Emacs Insert",
+      description:
+        "Insert text into a deterministic target window at point/bob/eob/line_column, with optional undo boundary grouping.",
+      parameters: INSERT_SCHEMA,
+      optional: true,
+      factory: ({ api, toolContext }) =>
+        createEmacsToolForContext(api, toolContext, (runCfg) =>
+          createInsertTool(runCfg),
+        ),
+    }),
+    tool({
+      name: "emacs_edit",
+      label: "Emacs Edit",
+      description:
+        "Edit a buffer by replacing exact text. The old_string must match exactly (including whitespace). Use this for precise, surgical edits.",
+      parameters: EDIT_SCHEMA,
+      optional: true,
+      factory: ({ api, toolContext }) =>
+        createEmacsToolForContext(api, toolContext, (runCfg) => createEditTool(runCfg)),
+    }),
+    tool({
+      name: "emacs_eval",
+      label: "Emacs Eval",
+      description:
+        "Evaluate arbitrary Emacs Lisp and return structured channels: value, stdout, messages, and stderr.",
+      parameters: EVAL_SCHEMA,
+      optional: true,
+      factory: ({ api, toolContext }) =>
+        createEmacsToolForContext(api, toolContext, (runCfg) => createEvalTool(runCfg)),
+    }),
+  ],
+});

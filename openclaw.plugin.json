@@ -1,20 +1,9 @@
 {
   "id": "emacs-tools",
   "name": "Emacs Tools",
-  "description": "Agent tools that control a running Emacs daemon via emacsclient.",
-  "contracts": {
-    "tools": [
-      "emacs_list",
-      "emacs_read",
-      "emacs_open",
-      "emacs_insert",
-      "emacs_edit",
-      "emacs_eval"
-    ]
-  },
+  "description": "Agent tools to control a running Emacs daemon via emacsclient.",
   "configSchema": {
     "type": "object",
-    "additionalProperties": false,
     "properties": {
       "emacsclientPath": {
         "type": "string",
@@ -44,23 +33,76 @@
       },
       "allowedRoots": {
         "type": "array",
-        "items": { "type": "string" },
+        "items": {
+          "type": "string"
+        },
         "description": "Extra absolute roots allowed for emacs_open when outside workspace."
       },
       "disableInSandbox": {
         "type": "boolean",
         "description": "Disable tools in sandboxed sessions (default: true)."
       }
-    }
+    },
+    "additionalProperties": false
   },
   "uiHints": {
-    "emacsclientPath": { "label": "emacsclient Path" },
-    "socketName": { "label": "Socket Name" },
-    "serverFile": { "label": "Server File" },
-    "timeoutSeconds": { "label": "Timeout (s)" },
-    "maxReadChars": { "label": "Max Read Chars" },
-    "allowOpenOutsideWorkspace": { "label": "Allow Outside Workspace" },
-    "allowedRoots": { "label": "Allowed Roots" },
-    "disableInSandbox": { "label": "Disable In Sandbox" }
+    "emacsclientPath": {
+      "label": "emacsclient Path"
+    },
+    "socketName": {
+      "label": "Socket Name"
+    },
+    "serverFile": {
+      "label": "Server File"
+    },
+    "timeoutSeconds": {
+      "label": "Timeout (s)"
+    },
+    "maxReadChars": {
+      "label": "Max Read Chars"
+    },
+    "allowOpenOutsideWorkspace": {
+      "label": "Allow Outside Workspace"
+    },
+    "allowedRoots": {
+      "label": "Allowed Roots"
+    },
+    "disableInSandbox": {
+      "label": "Disable In Sandbox"
+    }
+  },
+  "version": "0.1.0",
+  "activation": {
+    "onStartup": true
+  },
+  "contracts": {
+    "tools": [
+      "emacs_list",
+      "emacs_read",
+      "emacs_open",
+      "emacs_insert",
+      "emacs_edit",
+      "emacs_eval"
+    ]
+  },
+  "toolMetadata": {
+    "emacs_list": {
+      "optional": true
+    },
+    "emacs_read": {
+      "optional": true
+    },
+    "emacs_open": {
+      "optional": true
+    },
+    "emacs_insert": {
+      "optional": true
+    },
+    "emacs_edit": {
+      "optional": true
+    },
+    "emacs_eval": {
+      "optional": true
+    }
   }
 }
