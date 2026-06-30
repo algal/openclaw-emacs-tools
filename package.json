@@ -8,7 +8,9 @@
     "claw-emacs": "./dist/cli.js"
   },
   "files": [
-    "dist/",
+    "dist/cli.js",
+    "dist/core.js",
+    "dist/plugin.js",
     "README.md",
     "openclaw.plugin.json"
   ],

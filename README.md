@@ -7,7 +7,7 @@ OpenClaw plugin and CLI that give agents or shell scripts direct access to a run
 | Tool           | Description                                                                           |
 |----------------|---------------------------------------------------------------------------------------|
 | `emacs_read`   | Read text from a buffer. Omit `buffer` to read the user's active window.              |
-| `emacs_edit`   | Find-and-replace in a buffer. Exact match on `old_string`, replace with `new_string`. |
+| `emacs_edit`   | Find-and-replace in a buffer using normalized `old_string`/`new_string` params.      |
 | `emacs_insert` | Insert text at point/bob/eob/line_column. Omit `buffer` for the active buffer.        |
 | `emacs_open`   | Open a file in the user's active window, with optional line/column positioning.       |
 | `emacs_eval`   | Evaluate arbitrary Emacs Lisp. Returns the expression's value or `princ` output.      |
@@ -32,7 +32,9 @@ Returns buffer contents with point/line/column metadata.
 emacs_edit(buffer, old_string, new_string)
 ```
 
-Surgical find-and-replace. `old_string` must match exactly (including whitespace). Errors if no match or multiple matches found. Supports undo.
+Surgical find-and-replace. `old_string` and `new_string` follow OpenClaw-style
+parameter normalization, so leading/trailing parameter whitespace is trimmed before
+matching/replacement. Errors if no match or multiple matches found. Supports undo.
 
 ### `emacs_insert`
 

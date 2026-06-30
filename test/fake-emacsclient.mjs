@@ -37,6 +37,15 @@ function boolAfter(name) {
   return undefined;
 }
 
+function evalValueFormLine() {
+  const match = expression.match(/\(setq openclaw-value\n([^\n]*)/);
+  if (!match) {
+    return undefined;
+  }
+  const line = match[1].replace(/^ {24}/, "");
+  return line.endsWith(")") ? line.slice(0, -1) : line;
+}
+
 const payload = {
   ok: true,
   fake: true,
@@ -96,6 +105,7 @@ if (tool === "emacs_list") {
 } else if (tool === "emacs_eval") {
   Object.assign(payload, {
     expressionIncluded: expression.includes("(+ 1 2)"),
+    evalValueFormLine: evalValueFormLine(),
     value: "3",
     valueType: "integer",
     stdout: "",

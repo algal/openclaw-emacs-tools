@@ -292,18 +292,76 @@ test("shared core executes list with fake emacsclient", async () => {
   assert.equal(payload.includeWindows, false);
 });
 
+test("shared core trims edit strings by default like OpenClaw param readers", async () => {
+  const { executeEmacsTool } = await import(coreUrl);
+  const payload = await executeEmacsTool(
+    "emacs_edit",
+    {
+      buffer: "*compat*",
+      old_string: "  old  ",
+      new_string: "  new  ",
+    },
+    { emacsclientPath: fakeEmacsclient },
+    { workspaceDir: rootDir },
+  );
+
+  assert.equal(payload.tool, "emacs_edit");
+  assert.equal(payload.old_string, "old");
+  assert.equal(payload.new_string, "new");
+});
+
+test("shared core trims eval expression by default like OpenClaw param readers", async () => {
+  const { executeEmacsTool } = await import(coreUrl);
+  const payload = await executeEmacsTool(
+    "emacs_eval",
+    { expression: "  (+ 1 2)  " },
+    { emacsclientPath: fakeEmacsclient },
+    { workspaceDir: rootDir },
+  );
+
+  assert.equal(payload.tool, "emacs_eval");
+  assert.equal(payload.evalValueFormLine, "(+ 1 2)");
+});
+
+test("shared core keeps OpenClaw permissive numeric parsing for open line", async () => {
+  const { executeEmacsTool } = await import(coreUrl);
+  const payload = await executeEmacsTool(
+    "emacs_open",
+    { path: "README.md", line: "5abc" },
+    { emacsclientPath: fakeEmacsclient },
+    { workspaceDir: rootDir },
+  );
+
+  assert.equal(payload.tool, "emacs_open");
+  assert.equal(payload.line, 5);
+});
+
+test("shared core preserves insert text exactly with trim:false", async () => {
+  const { executeEmacsTool } = await import(coreUrl);
+  const text = "  exact text  ";
+  const payload = await executeEmacsTool(
+    "emacs_insert",
+    { text, buffer: "*compat*", at: "eob" },
+    { emacsclientPath: fakeEmacsclient },
+    { workspaceDir: rootDir },
+  );
+
+  assert.equal(payload.tool, "emacs_insert");
+  assert.equal(payload.text, text);
+});
+
 test("shared core invalid input errors keep ToolInputError 400 shape", async () => {
   const { executeEmacsTool } = await import(coreUrl);
 
   await assert.rejects(
     () =>
       executeEmacsTool(
-        "emacs_read",
-        { buffer: 123 },
+        "emacs_edit",
+        { buffer: 123, old_string: "old", new_string: "new" },
         { emacsclientPath: fakeEmacsclient },
         { workspaceDir: rootDir },
       ),
-    (error) => isToolInputError(error) && /buffer must be a string/.test(error.message),
+    (error) => isToolInputError(error) && /buffer required/.test(error.message),
   );
 });
 
@@ -336,7 +394,7 @@ test("plugin adapter preserves core ToolInputError 400 shape", async () => {
   assert.ok(readTool);
 
   await assert.rejects(
-    () => readTool.execute("plugin-test", { buffer: 123 }),
-    (error) => isToolInputError(error) && /buffer must be a string/.test(error.message),
+    () => readTool.execute("plugin-test", { active: "yes" }),
+    (error) => isToolInputError(error) && /active must be a boolean/.test(error.message),
   );
 });

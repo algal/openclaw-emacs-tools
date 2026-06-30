@@ -105,7 +105,7 @@ export default defineToolPlugin({
       name: "emacs_edit",
       label: "Emacs Edit",
       description:
-        "Edit a buffer by replacing exact text. The old_string must match exactly (including whitespace). Use this for precise, surgical edits.",
+        "Edit a buffer by replacing exact text after OpenClaw-style parameter normalization. Use this for precise, surgical edits.",
       parameters: EDIT_SCHEMA,
       optional: true,
       factory: ({ api, toolContext }) =>

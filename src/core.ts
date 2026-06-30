@@ -211,7 +211,8 @@ export const EDIT_SCHEMA = Type.Object(
   {
     buffer: Type.String({ description: "Buffer name to edit. Required." }),
     old_string: Type.String({
-      description: "Exact text to find and replace (must match exactly, including whitespace).",
+      description:
+        "Text to find and replace after OpenClaw-style parameter normalization. Leading/trailing parameter whitespace is trimmed.",
     }),
     new_string: Type.String({
       description: "New text to replace the old text with.",
@@ -279,41 +280,66 @@ function parseString(value: unknown): string | undefined {
   return trimmed || undefined;
 }
 
+function toSnakeCaseKey(key: string): string {
+  return key
+    .replace(/([A-Z]+)([A-Z][a-z])/g, "$1_$2")
+    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+    .toLowerCase();
+}
+
+function readParamRaw(params: Record<string, unknown>, key: string): unknown {
+  if (Object.hasOwn(params, key)) {
+    return params[key];
+  }
+  const snakeKey = toSnakeCaseKey(key);
+  if (snakeKey !== key && Object.hasOwn(params, snakeKey)) {
+    return params[snakeKey];
+  }
+  return undefined;
+}
+
+function parseStrictFiniteNumber(value: string): number | undefined {
+  const normalized = value.trim();
+  if (!normalized || !/^[+-]?(?:(?:\d+\.?\d*)|(?:\.\d+))(?:e[+-]?\d+)?$/i.test(normalized)) {
+    return undefined;
+  }
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
 function readStringParam(
   params: Record<string, unknown>,
   key: string,
-  options: { required: true; trim?: boolean; allowEmpty?: boolean },
+  options: { required: true; trim?: boolean; allowEmpty?: boolean; label?: string },
 ): string;
 function readStringParam(
   params: Record<string, unknown>,
   key: string,
-  options?: { required?: false; trim?: boolean; allowEmpty?: boolean },
+  options?: { required?: false; trim?: boolean; allowEmpty?: boolean; label?: string },
 ): string | undefined;
 function readStringParam(
   params: Record<string, unknown>,
   key: string,
-  options: { required?: boolean; trim?: boolean; allowEmpty?: boolean } = {},
+  options: { required?: boolean; trim?: boolean; allowEmpty?: boolean; label?: string } = {},
 ): string | undefined {
-  const value = params[key];
-  if (value === undefined || value === null) {
-    if (options.required) {
-      throw new ToolInputError(`${key} required`);
-    }
-    return undefined;
-  }
-  if (typeof value !== "string") {
-    throw new ToolInputError(`${key} must be a string`);
-  }
-
-  const result = options.trim ? value.trim() : value;
-  if (!options.allowEmpty && result.length === 0) {
-    if (options.required) {
-      throw new ToolInputError(`${key} required`);
+  const { required = false, trim = true, label = key, allowEmpty = false } = options;
+  const raw = readParamRaw(params, key);
+  if (typeof raw !== "string") {
+    if (required) {
+      throw new ToolInputError(`${label} required`);
     }
     return undefined;
   }
 
-  return result;
+  const value = trim ? raw.trim() : raw;
+  if (!value && !allowEmpty) {
+    if (required) {
+      throw new ToolInputError(`${label} required`);
+    }
+    return undefined;
+  }
+
+  return value;
 }
 
 function readBooleanParam(
@@ -321,7 +347,7 @@ function readBooleanParam(
   key: string,
   fallback: boolean,
 ): boolean {
-  const value = params[key];
+  const value = readParamRaw(params, key);
   if (value === undefined || value === null) {
     return fallback;
   }
@@ -334,22 +360,53 @@ function readBooleanParam(
 function readNumberParam(
   params: Record<string, unknown>,
   key: string,
-  options: { integer?: boolean; required?: boolean } = {},
+  options: {
+    integer?: boolean;
+    required?: boolean;
+    label?: string;
+    strict?: boolean;
+    positiveInteger?: boolean;
+    nonNegativeInteger?: boolean;
+  } = {},
 ): number | undefined {
-  const value = params[key];
-  if (value === undefined || value === null || value === "") {
-    if (options.required) {
-      throw new ToolInputError(`${key} required`);
+  const {
+    integer = false,
+    required = false,
+    label = key,
+    strict = false,
+    positiveInteger = false,
+    nonNegativeInteger = false,
+  } = options;
+  const raw = readParamRaw(params, key);
+  let value: number | undefined;
+
+  if (typeof raw === "number" && Number.isFinite(raw)) {
+    value = raw;
+  } else if (typeof raw === "string") {
+    const trimmed = raw.trim();
+    if (trimmed) {
+      const parsed = strict ? parseStrictFiniteNumber(trimmed) : Number.parseFloat(trimmed);
+      if (parsed !== undefined && Number.isFinite(parsed)) {
+        value = parsed;
+      }
+    }
+  }
+
+  if (value === undefined) {
+    if (required) {
+      throw new ToolInputError(`${label} required`);
     }
     return undefined;
   }
 
-  const parsed = typeof value === "number" ? value : Number(value);
-  if (!Number.isFinite(parsed)) {
-    throw new ToolInputError(`${key} must be a number`);
+  if (positiveInteger) {
+    return Number.isSafeInteger(value) && value > 0 ? value : undefined;
+  }
+  if (nonNegativeInteger) {
+    return Number.isSafeInteger(value) && value >= 0 ? value : undefined;
   }
 
-  return options.integer ? Math.floor(parsed) : parsed;
+  return integer ? Math.trunc(value) : value;
 }
 
 function parseOptionalInt(
@@ -1022,7 +1079,7 @@ export function createEditTool(runCfg: EmacsRunConfig): EmacsCoreTool {
     name: "emacs_edit",
     label: "Emacs Edit",
     description:
-      "Edit a buffer by replacing exact text. The old_string must match exactly (including whitespace). Use this for precise, surgical edits.",
+      "Edit a buffer by replacing exact text after OpenClaw-style parameter normalization. Use this for precise, surgical edits.",
     parameters: EDIT_SCHEMA,
     execute: async (_toolCallId: string, args: unknown) => {
       const params = asRecord(args);
