@@ -7,6 +7,11 @@
   "bin": {
     "claw-emacs": "./dist/cli.js"
   },
+  "files": [
+    "dist/",
+    "README.md",
+    "openclaw.plugin.json"
+  ],
   "openclaw": {
     "extensions": [
       "./dist/plugin.js"
@@ -18,6 +23,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "postbuild": "chmod 755 dist/cli.js",
     "check": "tsc -p tsconfig.json --noEmit",
     "plugin:validate": "npm run build && openclaw plugins validate --entry ./dist/plugin.js",
     "test": "npm run build && node --test test/*.test.mjs"

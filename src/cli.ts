@@ -1,6 +1,9 @@
 #!/usr/bin/env node
-import { pathToFileURL } from "node:url";
+import { realpathSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import {
+  ToolInputError,
   executeEmacsTool,
   type EmacsToolContext,
   type EmacsToolName,
@@ -75,8 +78,10 @@ const COMMAND_SPECS: Record<string, CommandSpec> = {
   },
   read: {
     toolName: "emacs_read",
-    usage: "claw-emacs read [--buffer NAME] [--view visible|around_point|region] [--max-chars N]",
+    usage:
+      "claw-emacs read [--active | --buffer NAME | NAME] [--view visible|around_point|region] [--max-chars N]",
     flags: {
+      active: { target: "params", key: "active", type: "boolean" },
       buffer: { target: "params", key: "buffer", type: "string" },
       view: { target: "params", key: "view", type: "string" },
       "max-chars": { target: "params", key: "maxChars", type: "number" },
@@ -84,6 +89,12 @@ const COMMAND_SPECS: Record<string, CommandSpec> = {
       max_chars: { target: "params", key: "maxChars", type: "number" },
     },
     applyPositionals: (params, positionals) => {
+      if (positionals.length > 1) {
+        throw new ToolInputError("read accepts at most one positional buffer");
+      }
+      if (params.active === true && (params.buffer !== undefined || positionals.length > 0)) {
+        throw new ToolInputError("active conflicts with buffer");
+      }
       if (params.buffer === undefined && positionals.length === 1) {
         params.buffer = positionals[0];
       }
@@ -195,7 +206,7 @@ function parseBooleanLiteral(value: string): boolean {
   if (["0", "false", "no", "n", "off"].includes(normalized)) {
     return false;
   }
-  throw new Error(`invalid boolean value: ${value}`);
+  throw new ToolInputError(`invalid boolean value: ${value}`);
 }
 
 function coerceValue(spec: FlagSpec, value: string): string | number | boolean {
@@ -205,7 +216,7 @@ function coerceValue(spec: FlagSpec, value: string): string | number | boolean {
   if (spec.type === "number") {
     const parsed = Number(value);
     if (!Number.isFinite(parsed)) {
-      throw new Error(`${spec.key} must be a number`);
+      throw new ToolInputError(`${spec.key} must be a number`);
     }
     return parsed;
   }
@@ -251,10 +262,10 @@ function parseTokens(tokens: string[], specs: Record<string, FlagSpec>): ParsedF
     const spec = specs[name];
 
     if (!spec) {
-      throw new Error(`unknown flag: --${rawName}`);
+      throw new ToolInputError(`unknown flag: --${rawName}`);
     }
     if (negated && spec.type !== "boolean") {
-      throw new Error(`--no-${name} is only valid for boolean flags`);
+      throw new ToolInputError(`--no-${name} is only valid for boolean flags`);
     }
 
     if (spec.type === "boolean") {
@@ -266,7 +277,7 @@ function parseTokens(tokens: string[], specs: Record<string, FlagSpec>): ParsedF
 
     const nextValue = inlineValue ?? tokens[i + 1];
     if (nextValue === undefined || nextValue.startsWith("--")) {
-      throw new Error(`--${name} requires a value`);
+      throw new ToolInputError(`--${name} requires a value`);
     }
     if (inlineValue === undefined) {
       i += 1;
@@ -329,12 +340,12 @@ function parseInvocation(argv: string[]): {
 } {
   const { command, leadingGlobals, commandArgs } = splitInvocation(argv);
   if (!command) {
-    throw new Error("command required");
+    throw new ToolInputError("command required");
   }
 
   const commandSpec = getCommandSpec(command);
   if (!commandSpec) {
-    throw new Error(`unknown command: ${command}`);
+    throw new ToolInputError(`unknown command: ${command}`);
   }
 
   const parsed = parseTokens([...leadingGlobals, ...commandArgs], {
@@ -348,9 +359,14 @@ function parseInvocation(argv: string[]): {
 
   let params = parsed.params;
   if (typeof parsed.meta.jsonArgs === "string") {
-    const jsonArgs = JSON.parse(parsed.meta.jsonArgs);
+    let jsonArgs: unknown;
+    try {
+      jsonArgs = JSON.parse(parsed.meta.jsonArgs);
+    } catch (error) {
+      throw new ToolInputError(`--json-args must be valid JSON: ${truncateErrorMessage(error)}`);
+    }
     if (!jsonArgs || typeof jsonArgs !== "object" || Array.isArray(jsonArgs)) {
-      throw new Error("--json-args must be a JSON object");
+      throw new ToolInputError("--json-args must be a JSON object");
     }
     params = { ...(jsonArgs as Record<string, unknown>), ...params };
   }
@@ -377,6 +393,21 @@ function truncateErrorMessage(error: unknown): string {
   return message.length > MAX_ERROR_MESSAGE_CHARS
     ? `${message.slice(0, MAX_ERROR_MESSAGE_CHARS)}...`
     : message;
+}
+
+function structuredErrorPayload(error: unknown): Record<string, unknown> {
+  const status = (error as { status?: unknown } | null)?.status;
+  const payload: Record<string, unknown> = {
+    ok: false,
+    error: truncateErrorMessage(error),
+  };
+  if (typeof status === "number") {
+    payload.status = status;
+  }
+  if (error instanceof Error && error.name !== "Error") {
+    payload.name = error.name;
+  }
+  return payload;
 }
 
 function jsonLine(payload: unknown, pretty: boolean): { text: string; ok: boolean } {
@@ -429,18 +460,31 @@ export async function runCli(argv = process.argv.slice(2), ioInput: CliIo = {}):
       return 0;
     }
 
-    writeJson(
-      {
-        ok: false,
-        error: truncateErrorMessage(error),
-      },
-      false,
-      io,
-    );
+    writeJson(structuredErrorPayload(error), false, io);
     return 1;
   }
 }
 
-if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) {
+function realpathOrResolve(input: string): string {
+  try {
+    return realpathSync(input);
+  } catch {
+    return path.resolve(input);
+  }
+}
+
+function samePath(left: string, right: string): boolean {
+  const leftReal = realpathOrResolve(left);
+  const rightReal = realpathOrResolve(right);
+  return process.platform === "win32"
+    ? leftReal.toLowerCase() === rightReal.toLowerCase()
+    : leftReal === rightReal;
+}
+
+function isCliEntrypoint(): boolean {
+  return Boolean(process.argv[1]) && samePath(process.argv[1], fileURLToPath(import.meta.url));
+}
+
+if (isCliEntrypoint()) {
   process.exitCode = await runCli();
 }

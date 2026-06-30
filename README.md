@@ -16,9 +16,10 @@ OpenClaw plugin and CLI that give agents or shell scripts direct access to a run
 ### `emacs_read`
 
 ```
-emacs_read(buffer?, view?, maxChars?)
+emacs_read(active?, buffer?, view?, maxChars?)
 ```
 
+- `active` — Explicitly read the user's currently active window. Mutually exclusive with `buffer`.
 - `buffer` — Buffer name. If omitted, reads the user's currently active window.
 - `view` — `"visible"` (default), `"around_point"`, or `"region"`.
 - `maxChars` — Truncation limit.
@@ -78,6 +79,9 @@ Build the TypeScript outputs:
 ```bash
 npm run build
 ```
+
+The build marks `dist/cli.js` executable, so npm-linked and symlinked `claw-emacs`
+entrypoints can run through their shebang.
 
 For CLI use from this checkout:
 
@@ -168,6 +172,7 @@ Examples:
 
 ```bash
 claw-emacs list
+claw-emacs read --active --view visible
 claw-emacs read --buffer '*scratch*' --view visible --max-chars 12000
 claw-emacs open README.md --line 12 --column 0
 claw-emacs insert --text 'hello' --buffer '*scratch*' --at eob
@@ -178,14 +183,17 @@ claw-emacs eval --expression '(+ 1 2)'
 The CLI writes JSON to stdout on success and failure. Failures exit nonzero and use:
 
 ```json
-{"ok":false,"error":"..."}
+{"ok":false,"error":"...","status":400,"name":"ToolInputError"}
 ```
+
+Runtime failures may omit `status`/`name`; validation failures include the structured
+400 shape above.
 
 Monitoring-friendly examples:
 
 ```bash
 claw-emacs list | jq -c '{ok, count, buffers: [.buffers[].name]}'
-claw-emacs read --view visible | jq -e '.ok == true and (.visibleTextLength >= 0)'
+claw-emacs read --active --view visible | jq -e '.ok == true and (.visibleTextLength >= 0)'
 claw-emacs eval --expression '(progn (princ "alive") t)' | jq -e '.ok == true and .stdout == "alive"'
 ```
 
@@ -193,7 +201,7 @@ For shell checks that preserve the JSON error body:
 
 ```bash
 if ! claw-emacs list > /tmp/claw-emacs-status.json; then
-  jq -c '{ok, error}' /tmp/claw-emacs-status.json
+  jq -c '{ok, status, name, error}' /tmp/claw-emacs-status.json
   exit 1
 fi
 ```

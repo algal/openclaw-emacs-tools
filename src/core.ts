@@ -44,6 +44,15 @@ export type EmacsCoreTool = {
   execute: (toolCallId: string, args: unknown) => Promise<unknown>;
 };
 
+export class ToolInputError extends Error {
+  readonly status = 400;
+
+  constructor(message: string) {
+    super(message);
+    this.name = "ToolInputError";
+  }
+}
+
 type InsertPlacement = {
   at: "point" | "bob" | "eob" | "line_column";
   line?: number;
@@ -122,6 +131,12 @@ export const LIST_SCHEMA = Type.Object(
 
 export const READ_SCHEMA = Type.Object(
   {
+    active: Type.Optional(
+      Type.Boolean({
+        description:
+          "Explicitly read the user's currently active window. Mutually exclusive with buffer.",
+      }),
+    ),
     buffer: Type.Optional(
       Type.String({
         description: "Buffer name to read. If omitted, reads the user's currently active window.",
@@ -282,23 +297,38 @@ function readStringParam(
   const value = params[key];
   if (value === undefined || value === null) {
     if (options.required) {
-      throw new Error(`${key} required`);
+      throw new ToolInputError(`${key} required`);
     }
     return undefined;
   }
   if (typeof value !== "string") {
-    throw new Error(`${key} must be a string`);
+    throw new ToolInputError(`${key} must be a string`);
   }
 
   const result = options.trim ? value.trim() : value;
   if (!options.allowEmpty && result.length === 0) {
     if (options.required) {
-      throw new Error(`${key} required`);
+      throw new ToolInputError(`${key} required`);
     }
     return undefined;
   }
 
   return result;
+}
+
+function readBooleanParam(
+  params: Record<string, unknown>,
+  key: string,
+  fallback: boolean,
+): boolean {
+  const value = params[key];
+  if (value === undefined || value === null) {
+    return fallback;
+  }
+  if (typeof value !== "boolean") {
+    throw new ToolInputError(`${key} must be a boolean`);
+  }
+  return value;
 }
 
 function readNumberParam(
@@ -309,14 +339,14 @@ function readNumberParam(
   const value = params[key];
   if (value === undefined || value === null || value === "") {
     if (options.required) {
-      throw new Error(`${key} required`);
+      throw new ToolInputError(`${key} required`);
     }
     return undefined;
   }
 
   const parsed = typeof value === "number" ? value : Number(value);
   if (!Number.isFinite(parsed)) {
-    throw new Error(`${key} must be a number`);
+    throw new ToolInputError(`${key} must be a number`);
   }
 
   return options.integer ? Math.floor(parsed) : parsed;
@@ -364,7 +394,7 @@ function parseInsertPlacement(params: Record<string, unknown>): InsertPlacement 
   }
 
   if ((at === "line_column" || line !== undefined) && line === undefined) {
-    throw new Error("line required when at=line_column");
+    throw new ToolInputError("line required when at=line_column");
   }
 
   if (line !== undefined) {
@@ -578,7 +608,7 @@ function assertOpenPathAllowed(
     : undefined;
   const absolutePath = resolveAbsolutePath(requestedPath, workspaceDir);
   if (!absolutePath) {
-    throw new Error("path required");
+    throw new ToolInputError("path required");
   }
 
   const roots: string[] = [workspaceDir ?? process.cwd(), ...cfg.allowedRoots];
@@ -586,7 +616,7 @@ function assertOpenPathAllowed(
 
   if (!cfg.allowOpenOutsideWorkspace && !allowedByRoot) {
     const defaultRoot = workspaceDir ?? process.cwd();
-    throw new Error(
+    throw new ToolInputError(
       `path must be inside workspace or allowedRoots (resolved: ${absolutePath}, workspace: ${defaultRoot})`,
     );
   }
@@ -728,7 +758,11 @@ export function createReadTool(runCfg: EmacsRunConfig, cfg: EmacsToolsConfig): E
     parameters: READ_SCHEMA,
     execute: async (_toolCallId: string, args: unknown) => {
       const params = asRecord(args);
+      const active = readBooleanParam(params, "active", false);
       const bufferName = readStringParam(params, "buffer", { trim: true });
+      if (active && bufferName) {
+        throw new ToolInputError("active conflicts with buffer");
+      }
       const view = parseCurrentView(params.view);
       const requestedMaxChars = readNumberParam(params, "maxChars", { integer: true });
       const maxChars =
@@ -1159,7 +1193,7 @@ export async function executeEmacsTool(
 ): Promise<unknown> {
   const tool = createEmacsTool(name, configInput, ctx);
   if (!tool) {
-    throw new Error("emacs-tools disabled in sandboxed session");
+    throw new ToolInputError("emacs-tools disabled in sandboxed session");
   }
   return tool.execute("cli", args);
 }

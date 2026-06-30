@@ -61,9 +61,12 @@ if (tool === "emacs_list") {
     windows: [],
   });
 } else if (tool === "emacs_read") {
+  const hasBufferArg = !expression.includes("(buffer-name-arg nil)");
+  const buffer = hasBufferArg ? decodedStrings[0] : "*active*";
+  const requestedView = hasBufferArg ? decodedStrings[1] : decodedStrings[0];
   Object.assign(payload, {
-    buffer: decodedStrings[0] ?? "*active*",
-    requestedView: decodedStrings[1] ?? "visible",
+    buffer: buffer ?? "*active*",
+    requestedView: requestedView ?? "visible",
     maxChars: numberAfter("limit"),
     visibleText: "fake visible text",
     visibleTextLength: 17,

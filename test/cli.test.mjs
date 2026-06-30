@@ -9,6 +9,7 @@ const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
 const cliPath = path.join(rootDir, "dist", "cli.js");
 const cliUrl = pathToFileURL(cliPath).href;
 const coreUrl = pathToFileURL(path.join(rootDir, "dist", "core.js")).href;
+const pluginUrl = pathToFileURL(path.join(rootDir, "dist", "plugin.js")).href;
 const fakeEmacsclient = path.join(rootDir, "test", "fake-emacsclient.mjs");
 const fakeLogPath = path.join(os.tmpdir(), `claw-emacs-fake-${process.pid}.log`);
 process.env.FAKE_EMACSCLIENT_LOG = fakeLogPath;
@@ -51,6 +52,57 @@ async function runCli(args, options = {}) {
   };
 }
 
+function isToolInputError(error) {
+  return (
+    error instanceof Error &&
+    error.name === "ToolInputError" &&
+    error.status === 400
+  );
+}
+
+async function importCliAsMain(entryPath, args) {
+  const originalArgv = process.argv;
+  const originalExitCode = process.exitCode;
+  const originalWrite = process.stdout.write;
+  let stdout = "";
+
+  process.argv = [process.execPath, entryPath, ...args];
+  process.exitCode = undefined;
+  process.stdout.write = function writeTestStdout(chunk, encoding, callback) {
+    stdout += Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk);
+    if (typeof encoding === "function") {
+      encoding();
+    }
+    if (typeof callback === "function") {
+      callback();
+    }
+    return true;
+  };
+
+  try {
+    await import(`${pathToFileURL(entryPath).href}?main-test=${Date.now()}`);
+    return { stdout, exitCode: process.exitCode };
+  } finally {
+    process.argv = originalArgv;
+    process.exitCode = originalExitCode;
+    process.stdout.write = originalWrite;
+  }
+}
+
+test("built CLI is executable and symlinked main import runs CLI", async (t) => {
+  const mode = fs.statSync(cliPath).mode;
+  assert.notEqual(mode & 0o111, 0);
+
+  const linkPath = path.join(rootDir, `.claw-emacs-link-${process.pid}.js`);
+  fs.rmSync(linkPath, { force: true });
+  fs.symlinkSync(cliPath, linkPath);
+  t.after(() => fs.rmSync(linkPath, { force: true }));
+
+  const result = await importCliAsMain(linkPath, ["--help"]);
+  assert.equal(result.exitCode, 0);
+  assert.match(result.stdout, /Usage: claw-emacs/);
+});
+
 test("CLI list emits compact JSON and accepts global flags before the command", async () => {
   const result = await runCli([
     "--emacsclient-path",
@@ -85,6 +137,38 @@ test("CLI read supports plugin-name alias and maxChars flag", async () => {
   assert.equal(result.json.buffer, "*scratch*");
   assert.equal(result.json.requestedView, "around_point");
   assert.equal(result.json.maxChars, 512);
+});
+
+test("CLI read --active explicitly reads the active window", async () => {
+  const result = await runCli([
+    "read",
+    "--emacsclient-path",
+    fakeEmacsclient,
+    "--active",
+    "--view",
+    "visible",
+  ]);
+
+  assert.equal(result.status, 0);
+  assert.equal(result.json.tool, "emacs_read");
+  assert.equal(result.json.buffer, "*active*");
+  assert.equal(result.json.requestedView, "visible");
+});
+
+test("CLI read --active conflicts with buffer sources", async () => {
+  const flagConflict = await runCli(["read", "--active", "--buffer", "*scratch*"]);
+  assert.equal(flagConflict.status, 1);
+  assert.equal(flagConflict.json.ok, false);
+  assert.equal(flagConflict.json.status, 400);
+  assert.equal(flagConflict.json.name, "ToolInputError");
+  assert.match(flagConflict.json.error, /active conflicts with buffer/);
+
+  const positionalConflict = await runCli(["read", "*scratch*", "--active"]);
+  assert.equal(positionalConflict.status, 1);
+  assert.equal(positionalConflict.json.ok, false);
+  assert.equal(positionalConflict.json.status, 400);
+  assert.equal(positionalConflict.json.name, "ToolInputError");
+  assert.match(positionalConflict.json.error, /active conflicts with buffer/);
 });
 
 test("CLI open maps flags to plugin params", async () => {
@@ -166,6 +250,8 @@ test("CLI emits nonzero JSON errors on validation failure", async () => {
   assert.equal(result.status, 1);
   assert.equal(result.stderr, "");
   assert.equal(result.json.ok, false);
+  assert.equal(result.json.status, 400);
+  assert.equal(result.json.name, "ToolInputError");
   assert.match(result.json.error, /path must be inside workspace or allowedRoots/);
 });
 
@@ -204,4 +290,53 @@ test("shared core executes list with fake emacsclient", async () => {
   assert.equal(payload.tool, "emacs_list");
   assert.equal(payload.includeFrames, false);
   assert.equal(payload.includeWindows, false);
+});
+
+test("shared core invalid input errors keep ToolInputError 400 shape", async () => {
+  const { executeEmacsTool } = await import(coreUrl);
+
+  await assert.rejects(
+    () =>
+      executeEmacsTool(
+        "emacs_read",
+        { buffer: 123 },
+        { emacsclientPath: fakeEmacsclient },
+        { workspaceDir: rootDir },
+      ),
+    (error) => isToolInputError(error) && /buffer must be a string/.test(error.message),
+  );
+});
+
+test("plugin adapter preserves core ToolInputError 400 shape", async () => {
+  const { default: plugin } = await import(pluginUrl);
+  const registeredTools = [];
+  const api = {
+    pluginConfig: { emacsclientPath: fakeEmacsclient },
+    logger: {
+      info() {},
+      warn() {},
+      error() {},
+      debug() {},
+    },
+    registerTool(toolOrFactory, options) {
+      registeredTools.push({ toolOrFactory, options });
+    },
+  };
+
+  plugin.register(api);
+  const readRegistration = registeredTools.find(
+    (entry) => entry.options?.name === "emacs_read",
+  );
+  assert.ok(readRegistration);
+
+  const readTool = readRegistration.toolOrFactory({
+    workspaceDir: rootDir,
+    sandboxed: false,
+  });
+  assert.ok(readTool);
+
+  await assert.rejects(
+    () => readTool.execute("plugin-test", { buffer: 123 }),
+    (error) => isToolInputError(error) && /buffer must be a string/.test(error.message),
+  );
 });
