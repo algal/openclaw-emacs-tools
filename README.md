@@ -1,6 +1,6 @@
-# Emacs Tools Plugin for OpenClaw
+# Claw Emacs
 
-OpenClaw plugin that gives your agent direct access to a running Emacs daemon via `emacsclient`. Read buffers, make edits, open files, and evaluate arbitrary Emacs Lisp — all through clean tool interfaces designed to align with standard LLM tool-use patterns.
+OpenClaw plugin and CLI that give agents or shell scripts direct access to a running Emacs daemon via `emacsclient`. Read buffers, make edits, open files, and evaluate arbitrary Emacs Lisp through the same command surface.
 
 ## Tools
 
@@ -73,8 +73,23 @@ Returns all buffers (name, file, mode, modified status) plus optional frame/wind
 
 ## Install
 
+Build the TypeScript outputs:
+
 ```bash
-openclaw plugins install ~/path/to/emacs-tools
+npm run build
+```
+
+For CLI use from this checkout:
+
+```bash
+npm link
+claw-emacs --help
+```
+
+For OpenClaw plugin use:
+
+```bash
+openclaw plugins install ~/path/to/claw-emacs
 ```
 
 Then enable for your agent:
@@ -113,6 +128,74 @@ In `openclaw.json` under `plugins.entries`:
     }
   }
 }
+```
+
+## CLI
+
+The package exposes one binary:
+
+```bash
+claw-emacs <command> [flags]
+```
+
+Commands match the OpenClaw tools:
+
+| CLI command | Plugin alias   | Description                                      |
+|-------------|----------------|--------------------------------------------------|
+| `list`      | `emacs_list`   | List buffers, frames, and windows.               |
+| `read`      | `emacs_read`   | Read text from a buffer or active window.        |
+| `open`      | `emacs_open`   | Open a file in the active Emacs window.          |
+| `insert`    | `emacs_insert` | Insert text at point/bob/eob/line_column.        |
+| `edit`      | `emacs_edit`   | Replace exact text in a buffer.                  |
+| `eval`      | `emacs_eval`   | Evaluate Emacs Lisp with structured capture.     |
+
+Global flags mirror plugin config:
+
+```bash
+--emacsclient-path PATH
+--socket-name NAME
+--server-file PATH
+--timeout-seconds N
+--max-read-chars N
+--workspace-dir DIR
+--allow-open-outside-workspace
+--allowed-root DIR
+--json-args '{"buffer":"*scratch*"}'
+--pretty
+```
+
+Examples:
+
+```bash
+claw-emacs list
+claw-emacs read --buffer '*scratch*' --view visible --max-chars 12000
+claw-emacs open README.md --line 12 --column 0
+claw-emacs insert --text 'hello' --buffer '*scratch*' --at eob
+claw-emacs edit --buffer '*scratch*' --old-string 'hello' --new-string 'hello world'
+claw-emacs eval --expression '(+ 1 2)'
+```
+
+The CLI writes JSON to stdout on success and failure. Failures exit nonzero and use:
+
+```json
+{"ok":false,"error":"..."}
+```
+
+Monitoring-friendly examples:
+
+```bash
+claw-emacs list | jq -c '{ok, count, buffers: [.buffers[].name]}'
+claw-emacs read --view visible | jq -e '.ok == true and (.visibleTextLength >= 0)'
+claw-emacs eval --expression '(progn (princ "alive") t)' | jq -e '.ok == true and .stdout == "alive"'
+```
+
+For shell checks that preserve the JSON error body:
+
+```bash
+if ! claw-emacs list > /tmp/claw-emacs-status.json; then
+  jq -c '{ok, error}' /tmp/claw-emacs-status.json
+  exit 1
+fi
 ```
 
 ## Requirements

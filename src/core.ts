@@ -2,20 +2,8 @@ import { spawn } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import { Type } from "typebox";
-import type {
-  AnyAgentTool,
-  OpenClawPluginApi,
-  OpenClawPluginToolContext,
-} from "openclaw/plugin-sdk/core";
-import { readNumberParam, readStringParam } from "openclaw/plugin-sdk/param-readers";
-import { defineToolPlugin } from "openclaw/plugin-sdk/tool-plugin";
 
-// jsonResult is not exported from any plugin-sdk subpath as of v2026.3.22.
-function jsonResult(payload: unknown): { content: { type: "text"; text: string }[]; details: unknown } {
-  return { content: [{ type: "text", text: JSON.stringify(payload, null, 2) }], details: payload };
-}
-
-type EmacsToolsPluginConfig = {
+export type EmacsToolsConfig = {
   emacsclientPath: string;
   socketName?: string;
   serverFile?: string;
@@ -26,11 +14,34 @@ type EmacsToolsPluginConfig = {
   disableInSandbox: boolean;
 };
 
-type EmacsRunConfig = {
+export type EmacsToolsConfigInput = Partial<EmacsToolsConfig>;
+
+export type EmacsRunConfig = {
   emacsclientPath: string;
   socketName?: string;
   serverFile?: string;
   timeoutSeconds: number;
+};
+
+export type EmacsToolContext = {
+  workspaceDir?: string;
+  sandboxed?: boolean;
+};
+
+export type EmacsToolName =
+  | "emacs_list"
+  | "emacs_read"
+  | "emacs_open"
+  | "emacs_insert"
+  | "emacs_edit"
+  | "emacs_eval";
+
+export type EmacsCoreTool = {
+  name: EmacsToolName;
+  label: string;
+  description: string;
+  parameters: unknown;
+  execute: (toolCallId: string, args: unknown) => Promise<unknown>;
 };
 
 type InsertPlacement = {
@@ -40,7 +51,7 @@ type InsertPlacement = {
   undoBoundary: boolean;
 };
 
-const DEFAULT_CONFIG: EmacsToolsPluginConfig = {
+export const DEFAULT_CONFIG: EmacsToolsConfig = {
   emacsclientPath: "emacsclient",
   timeoutSeconds: 5,
   maxReadChars: 24_000,
@@ -53,7 +64,7 @@ const MAX_STDIO_BYTES = 2 * 1024 * 1024;
 const MAX_CURRENT_CHARS_HARD_LIMIT = 200_000;
 const MIN_CURRENT_CHARS_HARD_LIMIT = 256;
 
-const CONFIG_SCHEMA = Type.Object(
+export const CONFIG_SCHEMA = Type.Object(
   {
     emacsclientPath: Type.Optional(
       Type.String({
@@ -101,7 +112,7 @@ const CONFIG_SCHEMA = Type.Object(
   { additionalProperties: false },
 );
 
-const LIST_SCHEMA = Type.Object(
+export const LIST_SCHEMA = Type.Object(
   {
     includeFrames: Type.Optional(Type.Boolean()),
     includeWindows: Type.Optional(Type.Boolean()),
@@ -109,7 +120,7 @@ const LIST_SCHEMA = Type.Object(
   { additionalProperties: false },
 );
 
-const READ_SCHEMA = Type.Object(
+export const READ_SCHEMA = Type.Object(
   {
     buffer: Type.Optional(
       Type.String({
@@ -139,7 +150,7 @@ const READ_SCHEMA = Type.Object(
   { additionalProperties: false },
 );
 
-const OPEN_SCHEMA = Type.Object(
+export const OPEN_SCHEMA = Type.Object(
   {
     path: Type.String(),
     line: Type.Optional(Type.Number({ minimum: 1 })),
@@ -149,7 +160,7 @@ const OPEN_SCHEMA = Type.Object(
   { additionalProperties: false },
 );
 
-const INSERT_SCHEMA = Type.Object(
+export const INSERT_SCHEMA = Type.Object(
   {
     text: Type.String(),
     buffer: Type.Optional(
@@ -172,7 +183,7 @@ const INSERT_SCHEMA = Type.Object(
   { additionalProperties: false },
 );
 
-const EVAL_SCHEMA = Type.Object(
+export const EVAL_SCHEMA = Type.Object(
   {
     expression: Type.String({
       description: "Emacs Lisp expression to evaluate.",
@@ -181,7 +192,7 @@ const EVAL_SCHEMA = Type.Object(
   { additionalProperties: false },
 );
 
-const EDIT_SCHEMA = Type.Object(
+export const EDIT_SCHEMA = Type.Object(
   {
     buffer: Type.String({ description: "Buffer name to edit. Required." }),
     old_string: Type.String({
@@ -253,6 +264,64 @@ function parseString(value: unknown): string | undefined {
   return trimmed || undefined;
 }
 
+function readStringParam(
+  params: Record<string, unknown>,
+  key: string,
+  options: { required: true; trim?: boolean; allowEmpty?: boolean },
+): string;
+function readStringParam(
+  params: Record<string, unknown>,
+  key: string,
+  options?: { required?: false; trim?: boolean; allowEmpty?: boolean },
+): string | undefined;
+function readStringParam(
+  params: Record<string, unknown>,
+  key: string,
+  options: { required?: boolean; trim?: boolean; allowEmpty?: boolean } = {},
+): string | undefined {
+  const value = params[key];
+  if (value === undefined || value === null) {
+    if (options.required) {
+      throw new Error(`${key} required`);
+    }
+    return undefined;
+  }
+  if (typeof value !== "string") {
+    throw new Error(`${key} must be a string`);
+  }
+
+  const result = options.trim ? value.trim() : value;
+  if (!options.allowEmpty && result.length === 0) {
+    if (options.required) {
+      throw new Error(`${key} required`);
+    }
+    return undefined;
+  }
+
+  return result;
+}
+
+function readNumberParam(
+  params: Record<string, unknown>,
+  key: string,
+  options: { integer?: boolean; required?: boolean } = {},
+): number | undefined {
+  const value = params[key];
+  if (value === undefined || value === null || value === "") {
+    if (options.required) {
+      throw new Error(`${key} required`);
+    }
+    return undefined;
+  }
+
+  const parsed = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(parsed)) {
+    throw new Error(`${key} must be a number`);
+  }
+
+  return options.integer ? Math.floor(parsed) : parsed;
+}
+
 function parseOptionalInt(
   params: Record<string, unknown>,
   key: string,
@@ -310,11 +379,12 @@ function parseInsertPlacement(params: Record<string, unknown>): InsertPlacement 
   };
 }
 
-function resolvePluginConfig(api: OpenClawPluginApi, ctx: OpenClawPluginToolContext): EmacsToolsPluginConfig {
-  const raw = asRecord(api.pluginConfig);
-  const workspaceDir = parseString(ctx.workspaceDir)
-    ? path.resolve(String(ctx.workspaceDir))
-    : undefined;
+export function resolveEmacsToolsConfig(
+  configInput: unknown = {},
+  ctx: EmacsToolContext = {},
+): EmacsToolsConfig {
+  const raw = asRecord(configInput);
+  const workspaceDir = parseString(ctx.workspaceDir) ? path.resolve(String(ctx.workspaceDir)) : undefined;
 
   const allowedRootsRaw = Array.isArray(raw.allowedRoots)
     ? raw.allowedRoots.filter((entry) => typeof entry === "string")
@@ -344,7 +414,7 @@ function resolvePluginConfig(api: OpenClawPluginApi, ctx: OpenClawPluginToolCont
   };
 }
 
-function resolveRunConfig(cfg: EmacsToolsPluginConfig): EmacsRunConfig {
+export function resolveRunConfig(cfg: EmacsToolsConfig): EmacsRunConfig {
   return {
     emacsclientPath: cfg.emacsclientPath,
     socketName: cfg.socketName,
@@ -500,8 +570,8 @@ async function runEmacsEval(runCfg: EmacsRunConfig, elispExpression: string): Pr
 
 function assertOpenPathAllowed(
   requestedPath: string,
-  ctx: OpenClawPluginToolContext,
-  cfg: EmacsToolsPluginConfig,
+  ctx: EmacsToolContext,
+  cfg: EmacsToolsConfig,
 ): string {
   const workspaceDir = parseString(ctx.workspaceDir)
     ? path.resolve(String(ctx.workspaceDir))
@@ -559,7 +629,7 @@ const ELISP_HELPERS = `
       (json-encode payload)))
 `.trim();
 
-function createListTool(runCfg: EmacsRunConfig): AnyAgentTool {
+export function createListTool(runCfg: EmacsRunConfig): EmacsCoreTool {
   return {
     name: "emacs_list",
     label: "Emacs List",
@@ -644,12 +714,12 @@ function createListTool(runCfg: EmacsRunConfig): AnyAgentTool {
 `.trim();
 
       const payload = await runEmacsEval(runCfg, expr);
-      return jsonResult(payload);
+      return payload;
     },
   };
 }
 
-function createReadTool(runCfg: EmacsRunConfig, cfg: EmacsToolsPluginConfig): AnyAgentTool {
+export function createReadTool(runCfg: EmacsRunConfig, cfg: EmacsToolsConfig): EmacsCoreTool {
   return {
     name: "emacs_read",
     label: "Emacs Read",
@@ -756,16 +826,16 @@ function createReadTool(runCfg: EmacsRunConfig, cfg: EmacsToolsPluginConfig): An
 `.trim();
 
       const payload = await runEmacsEval(runCfg, expr);
-      return jsonResult(payload);
+      return payload;
     },
   };
 }
 
-function createOpenTool(
+export function createOpenTool(
   runCfg: EmacsRunConfig,
-  cfg: EmacsToolsPluginConfig,
-  ctx: OpenClawPluginToolContext,
-): AnyAgentTool {
+  cfg: EmacsToolsConfig,
+  ctx: EmacsToolContext,
+): EmacsCoreTool {
   return {
     name: "emacs_open",
     label: "Emacs Open",
@@ -822,12 +892,12 @@ function createOpenTool(
 `.trim();
 
       const payload = await runEmacsEval(runCfg, expr);
-      return jsonResult(payload);
+      return payload;
     },
   };
 }
 
-function createInsertTool(runCfg: EmacsRunConfig): AnyAgentTool {
+export function createInsertTool(runCfg: EmacsRunConfig): EmacsCoreTool {
   return {
     name: "emacs_insert",
     label: "Emacs Insert",
@@ -908,12 +978,12 @@ function createInsertTool(runCfg: EmacsRunConfig): AnyAgentTool {
 `.trim();
 
       const payload = await runEmacsEval(runCfg, expr);
-      return jsonResult(payload);
+      return payload;
     },
   };
 }
 
-function createEditTool(runCfg: EmacsRunConfig): AnyAgentTool {
+export function createEditTool(runCfg: EmacsRunConfig): EmacsCoreTool {
   return {
     name: "emacs_edit",
     label: "Emacs Edit",
@@ -971,12 +1041,12 @@ function createEditTool(runCfg: EmacsRunConfig): AnyAgentTool {
 `.trim();
 
       const payload = await runEmacsEval(runCfg, expr);
-      return jsonResult(payload);
+      return payload;
     },
   };
 }
 
-function createEvalTool(runCfg: EmacsRunConfig): AnyAgentTool {
+export function createEvalTool(runCfg: EmacsRunConfig): EmacsCoreTool {
   return {
     name: "emacs_eval",
     label: "Emacs Eval",
@@ -1039,103 +1109,57 @@ function createEvalTool(runCfg: EmacsRunConfig): AnyAgentTool {
 `.trim();
 
       const payload = await runEmacsEval(runCfg, expr);
-      return jsonResult(payload);
+      return payload;
     },
   };
 }
 
-function createEmacsToolForContext(
-  api: OpenClawPluginApi,
-  ctx: OpenClawPluginToolContext,
-  create: (
-    runCfg: EmacsRunConfig,
-    cfg: EmacsToolsPluginConfig,
-    ctx: OpenClawPluginToolContext,
-  ) => AnyAgentTool,
-): AnyAgentTool | null {
-  const cfg = resolvePluginConfig(api, ctx);
+export const EMACS_TOOL_NAMES: readonly EmacsToolName[] = [
+  "emacs_list",
+  "emacs_read",
+  "emacs_open",
+  "emacs_insert",
+  "emacs_edit",
+  "emacs_eval",
+];
+
+export function createEmacsTool(
+  name: EmacsToolName,
+  configInput: unknown = {},
+  ctx: EmacsToolContext = {},
+): EmacsCoreTool | null {
+  const cfg = resolveEmacsToolsConfig(configInput, ctx);
 
   if (ctx.sandboxed && cfg.disableInSandbox) {
-    api.logger.info(
-      "emacs-tools: skipping registration in sandboxed session (disableInSandbox=true)",
-    );
     return null;
   }
 
-  return create(resolveRunConfig(cfg), cfg, ctx);
+  const runCfg = resolveRunConfig(cfg);
+  switch (name) {
+    case "emacs_list":
+      return createListTool(runCfg);
+    case "emacs_read":
+      return createReadTool(runCfg, cfg);
+    case "emacs_open":
+      return createOpenTool(runCfg, cfg, ctx);
+    case "emacs_insert":
+      return createInsertTool(runCfg);
+    case "emacs_edit":
+      return createEditTool(runCfg);
+    case "emacs_eval":
+      return createEvalTool(runCfg);
+  }
 }
 
-export default defineToolPlugin({
-  id: "emacs-tools",
-  name: "Emacs Tools",
-  description: "Agent tools to control a running Emacs daemon via emacsclient.",
-  configSchema: CONFIG_SCHEMA,
-  tools: (tool) => [
-    tool({
-      name: "emacs_list",
-      label: "Emacs List",
-      description:
-        "List buffers and optionally frames/windows, including stable ids for deterministic targeting.",
-      parameters: LIST_SCHEMA,
-      optional: true,
-      factory: ({ api, toolContext }) =>
-        createEmacsToolForContext(api, toolContext, (runCfg) => createListTool(runCfg)),
-    }),
-    tool({
-      name: "emacs_read",
-      label: "Emacs Read",
-      description:
-        "Read text from an Emacs buffer. If buffer is omitted, reads the user's currently active window. Returns buffer contents with point/line/column metadata.",
-      parameters: READ_SCHEMA,
-      optional: true,
-      factory: ({ api, toolContext }) =>
-        createEmacsToolForContext(api, toolContext, (runCfg, cfg) =>
-          createReadTool(runCfg, cfg),
-        ),
-    }),
-    tool({
-      name: "emacs_open",
-      label: "Emacs Open",
-      description:
-        "Open a file and display it in a deterministic target window, with optional line/column positioning.",
-      parameters: OPEN_SCHEMA,
-      optional: true,
-      factory: ({ api, toolContext }) =>
-        createEmacsToolForContext(api, toolContext, (runCfg, cfg, ctx) =>
-          createOpenTool(runCfg, cfg, ctx),
-        ),
-    }),
-    tool({
-      name: "emacs_insert",
-      label: "Emacs Insert",
-      description:
-        "Insert text into a deterministic target window at point/bob/eob/line_column, with optional undo boundary grouping.",
-      parameters: INSERT_SCHEMA,
-      optional: true,
-      factory: ({ api, toolContext }) =>
-        createEmacsToolForContext(api, toolContext, (runCfg) =>
-          createInsertTool(runCfg),
-        ),
-    }),
-    tool({
-      name: "emacs_edit",
-      label: "Emacs Edit",
-      description:
-        "Edit a buffer by replacing exact text. The old_string must match exactly (including whitespace). Use this for precise, surgical edits.",
-      parameters: EDIT_SCHEMA,
-      optional: true,
-      factory: ({ api, toolContext }) =>
-        createEmacsToolForContext(api, toolContext, (runCfg) => createEditTool(runCfg)),
-    }),
-    tool({
-      name: "emacs_eval",
-      label: "Emacs Eval",
-      description:
-        "Evaluate arbitrary Emacs Lisp and return structured channels: value, stdout, messages, and stderr.",
-      parameters: EVAL_SCHEMA,
-      optional: true,
-      factory: ({ api, toolContext }) =>
-        createEmacsToolForContext(api, toolContext, (runCfg) => createEvalTool(runCfg)),
-    }),
-  ],
-});
+export async function executeEmacsTool(
+  name: EmacsToolName,
+  args: unknown,
+  configInput: unknown = {},
+  ctx: EmacsToolContext = {},
+): Promise<unknown> {
+  const tool = createEmacsTool(name, configInput, ctx);
+  if (!tool) {
+    throw new Error("emacs-tools disabled in sandboxed session");
+  }
+  return tool.execute("cli", args);
+}

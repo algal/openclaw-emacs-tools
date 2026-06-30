@@ -4,9 +4,12 @@
   "private": true,
   "description": "OpenClaw plugin: Emacs tools via emacsclient",
   "type": "module",
+  "bin": {
+    "claw-emacs": "./dist/cli.js"
+  },
   "openclaw": {
     "extensions": [
-      "./dist/index.js"
+      "./dist/plugin.js"
     ]
   },
   "dependencies": {
@@ -16,7 +19,8 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "check": "tsc -p tsconfig.json --noEmit",
-    "plugin:validate": "npm run build && openclaw plugins validate --entry ./dist/index.js"
+    "plugin:validate": "npm run build && openclaw plugins validate --entry ./dist/plugin.js",
+    "test": "npm run build && node --test test/*.test.mjs"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
